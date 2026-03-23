@@ -1,133 +1,91 @@
-const mineflayer = require('mineflayer')
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
-const { GoalFollow, GoalBlock } = goals
-const collectBlock = require('mineflayer-collectblock').plugin
-const pvp = require('mineflayer-pvp').plugin
+// mineflayer-bot/index.js
+const mineflayer = require('mineflayer');
+const express = require('express');
+const cors = require('cors');
 
-const bot = mineflayer.createBot({
-  host: '191.96.231.14',
-  port: 10975,
-  username: 'Technoblade',
-  version: '1.21.1'
-})
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-// Load plugins
-bot.loadPlugin(pathfinder)
-bot.loadPlugin(collectBlock)
-bot.loadPlugin(pvp)
+let bot = null;
+let chatLog = [];
+let status = { connected: false, health: 20, food: 20, x: 0, y: 64, z: 0, dimension: 'overworld', username: 'Bot', ping: 0 };
 
-let mcData
-let defaultMove
+function createBot() {
+  bot = mineflayer.createBot({
+    host: 'miniplayerss132.mcsh.io',
+    port: 10975,
+    username: 'ControlBot',
+    version: false,
+  });
 
-bot.once('spawn', () => {
-  mcData = require('minecraft-data')(bot.version)
-  defaultMove = new Movements(bot, mcData)
+  bot.on('spawn', () => {
+    status.connected = true;
+    status.username = bot.username;
+    console.log('Bot spawned!');
+  });
 
-  bot.pathfinder.setMovements(defaultMove)
+  bot.on('health', () => {
+    status.health = bot.health;
+    status.food = bot.food;
+  });
 
-  console.log("✅ Bot joined server")
+  bot.on('move', () => {
+    if (bot.entity) {
+      status.x = Math.round(bot.entity.position.x);
+      status.y = Math.round(bot.entity.position.y);
+      status.z = Math.round(bot.entity.position.z);
+    }
+  });
 
-  // Auto-auth
-  setTimeout(() => {
-    bot.chat('/register Slobos Slobos')
-    bot.chat('/login Slobos')
-  }, 2000)
+  bot.on('chat', (username, message) => {
+    chatLog.push({ id: Date.now(), author: username, text: message, timestamp: Date.now() });
+    if (chatLog.length > 50) chatLog.shift();
+  });
 
-  // Start main AI loop
-  setInterval(mainAI, 3000)
-})
+  bot.on('end', () => {
+    status.connected = false;
+    setTimeout(createBot, 5000);
+  });
 
-// 🔁 MAIN AI LOOP
-async function mainAI() {
+  bot.on('error', (err) => {
+    console.error('Bot error:', err);
+    status.connected = false;
+  });
+}
+
+createBot();
+
+app.get('/status', (req, res) => res.json(status));
+app.get('/chat', (req, res) => res.json(chatLog));
+
+app.post('/command', (req, res) => {
+  const { type, message, direction, action } = req.body;
+  if (!bot || !status.connected) return res.json({ ok: false, error: 'Bot not connected' });
+
   try {
-    const player = bot.players['YourUsername']?.entity
-
-    // 🛡️ Protect player
-    if (player) {
-      bot.pathfinder.setGoal(new GoalFollow(player, 3), true)
+    if (type === 'chat') {
+      bot.chat(message);
+    } else if (type === 'move') {
+      if (direction === 'forward') bot.setControlState('forward', true), setTimeout(() => bot.setControlState('forward', false), 500);
+      else if (direction === 'back') bot.setControlState('back', true), setTimeout(() => bot.setControlState('back', false), 500);
+      else if (direction === 'left') bot.setControlState('left', true), setTimeout(() => bot.setControlState('left', false), 500);
+      else if (direction === 'right') bot.setControlState('right', true), setTimeout(() => bot.setControlState('right', false), 500);
+      else if (direction === 'jump') bot.setControlState('jump', true), setTimeout(() => bot.setControlState('jump', false), 500);
+      else if (direction === 'sneak') bot.setControlState('sneak', true), setTimeout(() => bot.setControlState('sneak', false), 1000);
+      else if (direction === 'sprint') bot.setControlState('sprint', true), setTimeout(() => bot.setControlState('sprint', false), 2000);
+    } else if (type === 'action') {
+      if (action === 'attack') bot.attack(bot.nearestEntity());
+      else if (action === 'use') bot.activateItem();
+      else if (action === 'drop') bot.tossStack(bot.heldItem);
+      else if (action === 'disconnect') { bot.quit(); status.connected = false; }
+      else if (action === 'reconnect') createBot();
     }
-
-    // ⚔️ Attack nearby hostile mobs
-    const mob = bot.nearestEntity(entity =>
-      entity.type === 'mob' &&
-      entity.mobType !== 'Armor Stand' &&
-      entity.position.distanceTo(bot.entity.position) < 10
-    )
-
-    if (mob) {
-      bot.pvp.attack(mob)
-      return
-    }
-
-    // 🍖 Auto eat
-    if (bot.food < 15) {
-      const food = bot.inventory.items().find(item =>
-        item.name.includes('bread') || item.name.includes('beef')
-      )
-      if (food) await bot.equip(food, 'hand')
-      bot.consume()
-    }
-
-    // ⛏️ Gather resources (wood/stone)
-    await gatherResources()
-
-  } catch (err) {
-    console.log("AI Error:", err.message)
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
   }
-}
+});
 
-// ⛏️ RESOURCE GATHERING
-async function gatherResources() {
-  const targets = ['oak_log', 'stone', 'coal_ore', 'iron_ore']
-
-  for (let name of targets) {
-    const block = bot.findBlock({
-      matching: block => block.name.includes(name),
-      maxDistance: 32
-    })
-
-    if (block) {
-      try {
-        await bot.pathfinder.goto(new GoalBlock(block.position.x, block.position.y, block.position.z))
-        await bot.collectBlock.collect(block)
-        console.log("⛏️ Collected:", block.name)
-        return
-      } catch (err) {
-        console.log("Mining error:", err.message)
-      }
-    }
-  }
-}
-
-// 💬 Chat commands
-bot.on('chat', (username, message) => {
-  if (username === bot.username) return
-
-  if (message === 'follow me') {
-    const player = bot.players[username]?.entity
-    if (player) {
-      bot.chat("Following you!")
-      bot.pathfinder.setGoal(new GoalFollow(player, 2), true)
-    }
-  }
-
-  if (message === 'stop') {
-    bot.chat("Stopping!")
-    bot.pathfinder.setGoal(null)
-  }
-
-  if (message === 'mine') {
-    bot.chat("Mining resources!")
-    gatherResources()
-  }
-})
-
-// 🔌 Auto reconnect
-bot.on('end', () => {
-  console.log("🔄 Reconnecting...")
-  setTimeout(() => {
-    require('child_process').exec('node bot.js')
-  }, 3000)
-})
-
-bot.on('error', err => console.log("❌ Error:", err))
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Bot API running on port ${PORT}`));
