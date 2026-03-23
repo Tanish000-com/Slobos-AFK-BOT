@@ -1,91 +1,133 @@
-{
-  "name": "AFK Bot",
-  "bot-account": {
-    "username": "Technoblade",
-    "password": "",
-    "type": "offline"
-  },
-  "server": {
-    "ip": "191.96.231.14",
-    "port": 10975,
-    "version": "1.21.1"
-  },
-  "position": {
-    "enabled": true,
-    "x": 0,
-    "y": 100,
-    "z": 0
-  },
-  "utils": {
-    "auto-auth": {
-      "enabled": true,
-      "password": "Slobos"
-    },
-    "anti-afk": {
-      "enabled": true,
-      "sneak": true
-    },
-    "chat-messages": {
-      "enabled": true,
-      "repeat": true,
-      "repeat-delay": 500,
-      "messages": [
-        "I'm a regular player",
-        "Subscribe to Slobos!",
-        "I like to play Minecraft!"
-      ]
-    },
-    "chat-log": true,
-    "auto-reconnect": true,
-    "auto-reconnect-delay": 2000,
-    "max-reconnect-delay": 20000,
-    "periodic-rejoin": {
-      "enabled": true,
-      "min-interval": 20,
-      "max-interval": 60
+const mineflayer = require('mineflayer')
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
+const { GoalFollow, GoalBlock } = goals
+const collectBlock = require('mineflayer-collectblock').plugin
+const pvp = require('mineflayer-pvp').plugin
+
+const bot = mineflayer.createBot({
+  host: '191.96.231.14',
+  port: 10975,
+  username: 'Technoblade',
+  version: '1.21.1'
+})
+
+// Load plugins
+bot.loadPlugin(pathfinder)
+bot.loadPlugin(collectBlock)
+bot.loadPlugin(pvp)
+
+let mcData
+let defaultMove
+
+bot.once('spawn', () => {
+  mcData = require('minecraft-data')(bot.version)
+  defaultMove = new Movements(bot, mcData)
+
+  bot.pathfinder.setMovements(defaultMove)
+
+  console.log("✅ Bot joined server")
+
+  // Auto-auth
+  setTimeout(() => {
+    bot.chat('/register Slobos Slobos')
+    bot.chat('/login Slobos')
+  }, 2000)
+
+  // Start main AI loop
+  setInterval(mainAI, 3000)
+})
+
+// 🔁 MAIN AI LOOP
+async function mainAI() {
+  try {
+    const player = bot.players['YourUsername']?.entity
+
+    // 🛡️ Protect player
+    if (player) {
+      bot.pathfinder.setGoal(new GoalFollow(player, 3), true)
     }
-  },
-  "movement": {
-    "enabled": true,
-    "circle-walk": {
-      "enabled": true,
-      "radius": 4,
-      "speed": 3000
-    },
-    "look-around": {
-      "enabled": true,
-      "interval": 5000
-    },
-    "random-jump": {
-      "enabled": true,
-      "interval": 10000
+
+    // ⚔️ Attack nearby hostile mobs
+    const mob = bot.nearestEntity(entity =>
+      entity.type === 'mob' &&
+      entity.mobType !== 'Armor Stand' &&
+      entity.position.distanceTo(bot.entity.position) < 10
+    )
+
+    if (mob) {
+      bot.pvp.attack(mob)
+      return
     }
-  },
-  "modules": {
-    "avoidMobs": true,
-    "combat": true,
-    "beds": true,
-    "chat": true,
-    "console-commands": true
-  },
-  "combat": {
-    "attack-mobs": true,
-    "auto-eat": true
-  },
-  "beds": {
-    "pick-up-day": true,
-    "place-night": true
-  },
-  "discord": {
-    "enabled": true,
-    "webhookUrl": "https://discord.com/api/webhooks/1472567640521183243/7DzSIaCSM_9-5DjzrlAuP9Tdj7Y3yAP6BHg3scKzhaRFdVk8ctWBlhOc7I8l5xC6Nqm3",
-    "events": {
-      "connect": true,
-      "disconnect": true,
-      "chat": false
+
+    // 🍖 Auto eat
+    if (bot.food < 15) {
+      const food = bot.inventory.items().find(item =>
+        item.name.includes('bread') || item.name.includes('beef')
+      )
+      if (food) await bot.equip(food, 'hand')
+      bot.consume()
     }
-  },
-  "chat": {
-    "respond": true
+
+    // ⛏️ Gather resources (wood/stone)
+    await gatherResources()
+
+  } catch (err) {
+    console.log("AI Error:", err.message)
   }
 }
+
+// ⛏️ RESOURCE GATHERING
+async function gatherResources() {
+  const targets = ['oak_log', 'stone', 'coal_ore', 'iron_ore']
+
+  for (let name of targets) {
+    const block = bot.findBlock({
+      matching: block => block.name.includes(name),
+      maxDistance: 32
+    })
+
+    if (block) {
+      try {
+        await bot.pathfinder.goto(new GoalBlock(block.position.x, block.position.y, block.position.z))
+        await bot.collectBlock.collect(block)
+        console.log("⛏️ Collected:", block.name)
+        return
+      } catch (err) {
+        console.log("Mining error:", err.message)
+      }
+    }
+  }
+}
+
+// 💬 Chat commands
+bot.on('chat', (username, message) => {
+  if (username === bot.username) return
+
+  if (message === 'follow me') {
+    const player = bot.players[username]?.entity
+    if (player) {
+      bot.chat("Following you!")
+      bot.pathfinder.setGoal(new GoalFollow(player, 2), true)
+    }
+  }
+
+  if (message === 'stop') {
+    bot.chat("Stopping!")
+    bot.pathfinder.setGoal(null)
+  }
+
+  if (message === 'mine') {
+    bot.chat("Mining resources!")
+    gatherResources()
+  }
+})
+
+// 🔌 Auto reconnect
+bot.on('end', () => {
+  console.log("🔄 Reconnecting...")
+  setTimeout(() => {
+    require('child_process').exec('node bot.js')
+  }, 3000)
+})
+
+bot.on('error', err => console.log("❌ Error:", err))
